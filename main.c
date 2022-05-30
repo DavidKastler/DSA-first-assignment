@@ -2,138 +2,193 @@
 #include <string.h>
 #include <stdlib.h>
 
-void *head;
+#define INT_SIZE (int)sizeof(int)
+#define MIN_MEMORY_SIZE 24
+#define MIN_BLOCK_SIZE 16
+#define SIZE_OF_HEAD_WITH_TAIL 8
+#define FIRST_FREE_BLOCK_LOCATION 4
 
-void memory_innit(void *ptr, unsigned int size) {
-    head = ptr;
-    memset(head, 0, size);
-    size = size - 4 - 8;    // max pouzitelna velkost je minus root minus hlava s patou
-    *(int*) (head) = 8;    //ukazovatel na najlbizssi volny blok
-    *(int*) (head + 4) = (int) - size;   //zaciatok pamate - nebude sa menit, bude hovorit o velkosti pola (mensia kontrola)
-    *(int*) (head + 8) = (int) size - 8;     //hlava prveho pouzitelneho bloku pamate
-    *(int*) (head + size + 4) = (int) size - 8;    //pate prveho pouzitelneho bloku pamate
-    *(int*) (head + size + 8) = (int) - size;   // zapise patu celej pamate
+void *head;
+// x/50db head
+
+int setIntIntoRegion(int byteLocation, int value) {
+    return *(int*) (head + byteLocation) = value;
 }
 
-void* memory_alloc( unsigned int size ) {
-    int mem_size = - *(int*) (head + 4);
-    if (*(int*) head == 0) {
-        //printf("Nie je volna pamat");
+int getIntFromRegion(int byteLocation) {
+    return *(int *) (head + byteLocation);
+}
+
+int getHeadOfNextFreeBlock(int blockLocation) {
+    return getIntFromRegion(blockLocation + INT_SIZE);
+}
+
+int getHeadOfPrevFreeBlock(int blockLocation) {
+    return getIntFromRegion(blockLocation + 2 * INT_SIZE);
+}
+
+void setPointerToNextBlock(int blockLocation, int headOfNextBlock) {
+    setIntIntoRegion(blockLocation + INT_SIZE, headOfNextBlock);
+}
+
+void setPointerToPrevBlock(int blockLocation, int headOfPrevBlock) {
+    setIntIntoRegion(blockLocation + 2 * INT_SIZE, headOfPrevBlock);
+}
+
+/**
+ * Function that creates free block without pointers into region through head pointer
+ * @attention does not check if allocation does not override other blocks
+ * @param blockLocation     location of start byte of block
+ * @param blockSize         size of block you want to create
+ * @param nextBlockHead     position of next block head
+ * @param previousBlockHead position of previous block head
+ */
+void createFreeBlock(int blockLocation, int blockSize, int nextBlockHead, int previousBlockHead) {
+    memset((head + blockLocation), 0, blockSize);
+    setIntIntoRegion(blockLocation, blockSize);
+    setIntIntoRegion(blockLocation + blockSize - INT_SIZE, blockSize);
+    // next block
+    setIntIntoRegion(blockLocation + INT_SIZE, nextBlockHead);
+    // prev block
+    setIntIntoRegion(blockLocation + 2 * INT_SIZE, previousBlockHead);
+}
+
+/**
+ * Function that creates allocated block, it checks pointers of previously free block and acts accordingly
+ * @attention this is using explicit list logic
+ * @param blockHead start of the block you want to allocate
+ * @param realBlockSize real block size -> wanted_size + head(4B) + tail(4B)
+ */
+void allocateBlock(int blockHead, int realBlockSize) {
+    // saving pointers for later use after allocating new block
+    int nextFreeBlockHead = getHeadOfNextFreeBlock(blockHead);
+    int prevFreeBlockHead = getHeadOfPrevFreeBlock(blockHead);
+    int freeBlockSize = getIntFromRegion(blockHead);
+    // handling case when block was not empty or not big enough
+    if (freeBlockSize < realBlockSize) {
+        exit(1);
+    }
+
+    // if block can be split
+    if ((freeBlockSize - realBlockSize) >= MIN_BLOCK_SIZE) {
+        createFreeBlock(blockHead + realBlockSize, freeBlockSize - realBlockSize,
+                        nextFreeBlockHead, prevFreeBlockHead);
+        setIntIntoRegion(FIRST_FREE_BLOCK_LOCATION, blockHead + realBlockSize);
+    } else {
+        realBlockSize = freeBlockSize;
+        // pointer shuffle since current free block is all allocated
+        // it was last free block
+        if (prevFreeBlockHead == 0 && nextFreeBlockHead == 0) {
+            setIntIntoRegion(FIRST_FREE_BLOCK_LOCATION, 0);
+        }
+            // if it is last block in chain
+        else if (prevFreeBlockHead != 0 && nextFreeBlockHead == 0) {
+            setIntIntoRegion(FIRST_FREE_BLOCK_LOCATION, nextFreeBlockHead);
+            setPointerToPrevBlock(nextFreeBlockHead, 0);
+        }
+            // if it is first block in chain
+        else if (prevFreeBlockHead == 0 && nextFreeBlockHead != 0) {
+            setIntIntoRegion(FIRST_FREE_BLOCK_LOCATION, nextFreeBlockHead);
+            setPointerToPrevBlock(nextFreeBlockHead, 0);
+        }
+            // if it is in the middle of chain
+        else {
+            setPointerToNextBlock(prevFreeBlockHead, nextFreeBlockHead);
+            setPointerToPrevBlock(nextFreeBlockHead, prevFreeBlockHead);
+        }
+    }
+
+    memset((head + blockHead), -1, realBlockSize);
+    // head
+    setIntIntoRegion(blockHead, -realBlockSize);
+    // foot
+    setIntIntoRegion(blockHead + realBlockSize - INT_SIZE, -realBlockSize);
+
+
+}
+
+/**
+ * Function that inits the memory
+ * @example 0:4 bytes = size\n
+ *          4:8 bytes = first free block location\n
+ *          then first free block starts containing whole memory
+ * @param region pointer to start of memory
+ * @param size size of the memory
+ */
+void memory_innit(void *region, int size) {
+    if (size < MIN_MEMORY_SIZE) {
+        printf("Unable to allocate region that small");
+        exit(1);
+    }
+    head = region;
+    // clearing whole region of memory with zeros
+    memset(head, 0, size);
+    // first number refers to size
+    setIntIntoRegion(0, size);
+    // second number refers to fist free block
+    setIntIntoRegion(4, 8);
+    // create first free block
+    int firstFreeBlockSize = size - 2 * INT_SIZE;
+    setIntIntoRegion(8, firstFreeBlockSize);
+    setIntIntoRegion(size - INT_SIZE, firstFreeBlockSize);
+}
+
+/**
+ * Best fit algorithm that will output head location of best block to allocate
+ * @param newBlockSize  size of block we want to allocate
+ * @return  head location of best block to allocate
+ */
+int bestFit(const int newBlockSize) {
+    int freeBlockHead = getIntFromRegion(4);
+    if (freeBlockHead == 0) {
         return NULL;
     }
-    else
-    {
+    int freeBlockSize = getIntFromRegion(freeBlockHead);
 
-
-        if (size % 2 == 1) // zaokruhlovanie na nasobok dvojky
-        {
-            size++;
+    int bestBlockHead = 0;
+    int bestBlockSize = INT_MAX;
+    // if free block does not have pointer (it is 0) to next block it is last block
+    while (freeBlockHead != 0) {
+        // if we found exact block we were looking for
+        if (freeBlockSize == newBlockSize) {
+            bestBlockHead = freeBlockHead;
+            break;
         }
-
-        int head_with_tail = 8, size_of_free_block = *(int *) (head + *(int *) head), head_of_free_block;
-
-        if (*(int *) (head + 4) == -mem_size)      // konrola hlavy pamate ak sa rovna velkosti celej pouzitelnej pamati
-        {
-            int pointer_to_free_block = *(int *) head, offset_to_next_block_of_next_block = 0; // ulozenie offsetu na prvy volny blok
-            int best_fit = 0, best_size_fit =
-                    mem_size; // nastavenie na najhorsi mozny fit ktory sa potom upravi na najlepsi
-
-            while (1) // logika best fit
-            {
-                if (size_of_free_block >= size) // ak je blok dostatocne volny
-                {
-                    if (size_of_free_block <= best_size_fit) // ak je vhodnejsi
-                    {
-                        best_fit = pointer_to_free_block; // ulozenie offsetu na najvhodnejsi blok
-                        best_size_fit = size_of_free_block; // ulozenie velkosti najvhodnejsieho bloku
-                        if (best_size_fit == size) // ak sa nahodou najde presny blok tak sa algoritmus ukonci
-                        {
-                            break;
-                        }
-                    }
-                }
-                offset_to_next_block_of_next_block = *(int *) (head + pointer_to_free_block + sizeof(int));
-                if (offset_to_next_block_of_next_block == 0) // ak dalsi blok nema ukzazovatel tak sa algoritmus ukonci
-                {
-                    break;
-                }
-                pointer_to_free_block = offset_to_next_block_of_next_block;
-            }
-
-            head_of_free_block = best_fit;
-
-            // skontrolovat prepisovanie pointeru
-
-            if (size_of_free_block >= size)     // kontrola ci je volny blok dostatocne velky
-            {
-                //ulozenie pointerov na dalsi a predosly blok
-                int pointer_to_next = *((int *) (head + head_of_free_block + sizeof(int)));
-                int pointer_to_prev = *((int *) (head + head_of_free_block + 2 * sizeof(int)));
-
-                size_of_free_block = size_of_free_block - (int) size - head_with_tail;
-
-                if (size_of_free_block < 8 && size_of_free_block != -8)       // podmienka na boundovanie bloku ak by bol volny blok prilis maly
-                {
-                    size += size_of_free_block + head_with_tail;
-                    size_of_free_block = 0;
-                }
-
-                if (size_of_free_block >=  8)  // ak je blok vacssi alebo rovny ako minimalna velkost tak sa prepocita zvyskova velkost
-                {
-                    *(int *) (head + pointer_to_free_block + size + head_with_tail) = size_of_free_block; // nacitanie zmensenej velkosti po alokacii
-                    *(int *) (head + pointer_to_free_block + (size + head_with_tail) + size_of_free_block + 4) = size_of_free_block; // nacitanie zvysnej hodnoty na koniec volneho bloku
-                }
-                *(int *) (head + pointer_to_free_block) = (int) -size;   // hlavicka
-                *(int *) (head + pointer_to_free_block + size + 4) = (int) -size;    // pata
-                memset(head + pointer_to_free_block + 4, 0, size); // precistenie vnutorneho miesta bloku
-
-
-                // logika pointerov
-                if (size_of_free_block >= 8) // ak zotalo dostatok miesta tak sa len posunie hlavicka a pointery
-                {
-                    void *head_of_remaining_block = (head + pointer_to_free_block + size + 2 * sizeof(int));
-                    *(int *) head += (int) size + head_with_tail;
-                    *(int *) (head_of_remaining_block + sizeof(int)) = pointer_to_next;
-                    *(int *) (head_of_remaining_block + 2 * sizeof(int)) = pointer_to_prev;
-                } else if (size_of_free_block < 8) // ak sa pouzil cely volny blok
-                {
-                    if (pointer_to_next != 0)  // ak nebude nic v pointeri tak sa nebude nic zapisovat
-                    {
-                        *(int *) (head + pointer_to_next + 2 *
-                                                           sizeof(int)) = pointer_to_prev;   // ulozi sa offset na predosly blok do dalsieho bloku
-
-                    }
-                    if (pointer_to_prev != 0)  // ak nebude nic v pointeri tak sa nebude nic zapisovat
-                    {
-                        *(int *) (head + pointer_to_prev +
-                                  sizeof(int)) = pointer_to_next;   // ulozi sa offset na dalsi blok do predosleho bloku
-                    }
-                    if (head_of_free_block == *(int *) head) {
-                        *(int *) head = pointer_to_prev;
-                    }
-                }
-
-                return (void *) (head + pointer_to_free_block + 4);     // vrati pointer na data alkokovaneho miesta
-            } else {
-                //printf("Nie je dostatok pamate.\n");
-                return NULL;
-            }
-
-        } else {
-            //printf("Globalny pointer je chybny\n");
-            return NULL;
+        // if block is big enough and is closer to desired size
+        else if (freeBlockSize > newBlockSize && freeBlockSize < bestBlockSize) {
+            bestBlockHead = freeBlockHead;
+            bestBlockSize = freeBlockSize;
         }
+        freeBlockHead = getHeadOfNextFreeBlock(freeBlockHead);
+        freeBlockSize = getIntFromRegion(freeBlockHead);
     }
+    return bestBlockHead;
 }
 
+void* memoryAlloc(int newBlockSize) {
 
+    // TODO pridat mem_check
 
+    // if first free block pointer is 0 than memory is full
+    if (getIntFromRegion(FIRST_FREE_BLOCK_LOCATION) == 0) {
+        //printf("Memory is full.");
+        return NULL;
+    }
+    // rounding to even number
+    int realNewBlockSize = (newBlockSize % 2 == 1 ? newBlockSize + 1: newBlockSize) + SIZE_OF_HEAD_WITH_TAIL;
+    int freeBlockHead = bestFit(realNewBlockSize);
+
+    allocateBlock(freeBlockHead, realNewBlockSize);
+    return (void *) (head + freeBlockHead + 4);
+}
 
 int memory_free(void *valid_pointer)    // uvolnovanie hotove uz len logika pointerov
 {
     int mem_size = *(int*) (head + 4);
     void *head_of_block = (valid_pointer - 4); //head_of_block => adresa hlavicky
-    int head_with_tail = 8, size_of_block = -(*(int *) head_of_block), size_of_new_block = 0;
+    int head_with_tail = 8;
+    int size_of_block = -(*(int *) head_of_block);
+    int size_of_new_block = 0;
     int offset_to_next = 0, first_free_block = *(int *) head;
 
 
@@ -146,8 +201,8 @@ int memory_free(void *valid_pointer)    // uvolnovanie hotove uz len logika poin
             void *head_of_prev = (head_of_block - size_of_prev - head_with_tail);      // ukazovatel na hlavu predosleho volneho bloku
 
             //ulozenie offsetov dalsieho bloku + first_free_block
-            int offset_to_next_of_next_block = *(int *) (head_of_prev + sizeof(int));
-            int offset_to_prev_of_next_block = *(int *) (head_of_prev + 2 * sizeof(int));
+            int offset_to_next_of_next_block = *(int *) (head_of_prev + INT_SIZE);
+            int offset_to_prev_of_next_block = *(int *) (head_of_prev + 2 * INT_SIZE);
             first_free_block = *(int *) head;
 
 
@@ -168,9 +223,9 @@ int memory_free(void *valid_pointer)    // uvolnovanie hotove uz len logika poin
             if (*(int *) head < -mem_size) // kontrola hlavneho offsetu ci neukazuje mimo
             {
                 if (offset_to_next_of_next_block != 0 && offset_to_prev_of_next_block != 0) {
-                    *(int *) (head + offset_to_prev_of_next_block + sizeof(int)) = offset_to_next_of_next_block;
-                    *(int *) (head + offset_to_next_of_next_block + 2 * sizeof(int)) = offset_to_prev_of_next_block;
-                    *(int *) (head + offset_to_prev_of_next_block + 2 * sizeof(int)) = (int) (head_of_block - head);
+                    *(int *) (head + offset_to_prev_of_next_block + INT_SIZE) = offset_to_next_of_next_block;
+                    *(int *) (head + offset_to_next_of_next_block + 2 * INT_SIZE) = offset_to_prev_of_next_block;
+                    *(int *) (head + offset_to_prev_of_next_block + 2 * INT_SIZE) = (int) (head_of_block - head);
                 }
 
                 // nastavenie dalsieho a predosleho offetu + nastavenie hlavicky na uvolnovany blok
@@ -186,8 +241,8 @@ int memory_free(void *valid_pointer)    // uvolnovanie hotove uz len logika poin
 
 
             //ulozenie offsetov predosleho bloku + first_free_block
-            int offset_to_next_of_prev_block = *(int *) (head_of_next + sizeof(int));
-            int offset_to_prev_of_prev_block = *(int *) (head_of_next + 2 * sizeof(int));
+            int offset_to_next_of_prev_block = *(int *) (head_of_next + INT_SIZE);
+            int offset_to_prev_of_prev_block = *(int *) (head_of_next + 2 * INT_SIZE);
             first_free_block = *(int *) head;
 
 
@@ -202,12 +257,12 @@ int memory_free(void *valid_pointer)    // uvolnovanie hotove uz len logika poin
             if (*(int *) head < -mem_size) // kontrola hlavneho offsetu ci neukazuje mimo
             {
                 if (offset_to_next_of_prev_block != 0 && offset_to_prev_of_prev_block != 0) {
-                    *(int *) (head + offset_to_prev_of_prev_block + sizeof(int)) = offset_to_next_of_prev_block;
+                    *(int *) (head + offset_to_prev_of_prev_block + INT_SIZE) = offset_to_next_of_prev_block;
 
-                    *(int *) (head + offset_to_next_of_prev_block + 2 * sizeof(int)) = offset_to_prev_of_prev_block;
+                    *(int *) (head + offset_to_next_of_prev_block + 2 * INT_SIZE) = offset_to_prev_of_prev_block;
                 }
                 if (offset_to_prev_of_prev_block != 0) {
-                    *(int *) (head + offset_to_prev_of_prev_block + 2 * sizeof(int)) = (int) (head_of_block - head);
+                    *(int *) (head + offset_to_prev_of_prev_block + 2 * INT_SIZE) = (int) (head_of_block - head);
                 }
 
 
@@ -245,7 +300,7 @@ int memory_free(void *valid_pointer)    // uvolnovanie hotove uz len logika poin
 
 
 int memeory_check(void *ptr) {
-    int size = *(int *) (ptr - sizeof(int));
+    int size = *(int *) (ptr - INT_SIZE);
     if (size > 0)
     {
         if (*(int *) (ptr + size) == size) // pozrie patu, ak sa rovna, pointer je platny
@@ -265,8 +320,7 @@ int memeory_check(void *ptr) {
 
 
 
-void test_random (unsigned  int size, int min, int max )
-{
+void test_random(unsigned  int size, int min, int max ) {
     char region[size];
     void *block_array[5];
     int allocated_blocks = 0;
@@ -286,7 +340,7 @@ void test_random (unsigned  int size, int min, int max )
     for (int i = 0; i < 5; ++i)  // alokovanie 5 blokov
     {
         random = min + (rand() % (max - min + 1));
-        block_array[i] = memory_alloc(random);
+        block_array[i] = memoryAlloc(random);
         if (random % 2 == 1)
         {
             random++;
@@ -334,11 +388,11 @@ void test (int size) {
 
     memory_innit(region, size);
 
-    void *all_block = memory_alloc(8);
-    void *all_block_2 = memory_alloc(8);
-    void *all_block_3 = memory_alloc(8);
-    void *all_block_4 = memory_alloc(8);
-    void *all_block_5 = memory_alloc(8);
+    void *all_block = memoryAlloc(8);
+    void *all_block_2 = memoryAlloc(8);
+    void *all_block_3 = memoryAlloc(8);
+    void *all_block_4 = memoryAlloc(8);
+    void *all_block_5 = memoryAlloc(8);
 
     if ( all_block != NULL) { allocated_blocks ++;}
     if ( all_block_2 != NULL) { allocated_blocks ++;}
@@ -369,7 +423,7 @@ void test (int size) {
                 break;
             }
         }
-        remaining_memory = size - 3 * sizeof(int) - allocated_blocks * (8 + 2 * sizeof(int));
+        remaining_memory = size - 3 * INT_SIZE - allocated_blocks * (8 + 2 * INT_SIZE);
     }
 
     expected_size = size - allocated_blocks * 8;
@@ -386,7 +440,7 @@ int main(void) {
 
     // nepodarilo sa mi cele implementovat
     //scenar 1
-    //test(150);
+    test(50);
 
 
     //scenar 2
