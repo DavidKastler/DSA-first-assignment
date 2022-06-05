@@ -243,6 +243,9 @@ void* memoryAlloc(int newBlockSize) {
  * @return  true/false if operation was successful
  */
 bool memoryCheck(void *blockPointer) {
+    if (blockPointer == NULL) {
+        return false;
+    }
     const int memorySize = getIntFromRegion(0);
     const int blockLocation = getPointerLocation(blockPointer);
     const int blockHeadSize = getIntFromRegion(blockLocation);
@@ -251,10 +254,10 @@ bool memoryCheck(void *blockPointer) {
         return false;
     }
     // if block would reach outside memory
-    if ((blockLocation + blockHeadSize) > memorySize) {
+    if ((blockLocation + abs(blockHeadSize)) > memorySize) {
         return false;
     }
-    const int blockFootSize = getIntFromRegion(blockLocation + blockHeadSize);
+    const int blockFootSize = getIntFromRegion(blockLocation + abs(blockHeadSize) - INT_SIZE);
     // if footer and header does not match
     if (blockHeadSize != blockFootSize) {
         return false;
@@ -272,7 +275,7 @@ bool memoryFree(void *blockHeadPointer) {
         return false;
     }
     int memSize = getIntFromRegion(0);
-    int sizeOfBlock =  -(*(int *) blockHeadPointer);
+    int sizeOfBlock =  abs(*(int *) blockHeadPointer);
     int blockHead = getPointerLocation(blockHeadPointer);
     // getting successor and predecessor pointers
     int predBlockSize = EMPTY;
@@ -288,8 +291,8 @@ bool memoryFree(void *blockHeadPointer) {
         }
     }
     // if it is not trying to read beyond memory
-    if (blockHeadPointer + sizeOfBlock <= head + memSize) {
-        succBlockSize = *(int *) (blockHeadPointer + sizeOfBlock);
+    if ((blockHead + sizeOfBlock + INT_SIZE) <= memSize) {
+        succBlockSize = getIntFromRegion(blockHead + sizeOfBlock);
         if (succBlockSize >= MIN_BLOCK_SIZE) {
             succBlockHead = blockHead + sizeOfBlock;
         }
@@ -326,140 +329,122 @@ bool memoryFree(void *blockHeadPointer) {
     return true;
 }
 
-void testRandom(unsigned  int size, int min, int max ) {
-    char region[size];
-    void *block_array[5];
-    int allocated_blocks = 0;
-    int expected_allocation = 0;
-    float fragmenation = 0;
-    int allocated_size = 0;
-    int random = 0;
-    int allocated_memory = 0;
-
-    memoryInnit(region, size);
-
-    for (int i = 0; i < 5; ++i)  // nastavenie na NULL
-    {
-        block_array[i] = NULL;
+/**
+ * Test of creating 5 random size blocks
+ * @param SIZE memory size
+ * @param MIN min block size
+ * @param MAX max block size
+ */
+void testRandom(const int SIZE, const int MIN, const int MAX ) {
+    char region[SIZE];
+    const int NUMBER_OF_BLOCKS = 5;
+    void* blockArray[NUMBER_OF_BLOCKS];
+    for (int i = 0; i < NUMBER_OF_BLOCKS; ++i) {
+        blockArray[i] = NULL;
     }
 
-    for (int i = 0; i < 5; ++i)  // alokovanie 5 blokov
-    {
-        random = min + (rand() % (max - min + 1));
-        block_array[i] = memoryAlloc(random);
-        if (random % 2 == 1)
-        {
-            random++;
-        }
-        if (block_array[i] != NULL)
-        {
-            allocated_size += random;
-        }
-    }
+    memoryInnit(region, SIZE);
 
-
-    for (int i = 0; i < 5; ++i) {
-        if (block_array[i] != NULL)
-        {
-            allocated_blocks++;
+    // alokovanie 5 blokov
+    int allocatedBlocksCount = 0;
+    int allocatedSize = 0;
+    int realAllocatedSize = 0;
+    int randomSize;
+    for (int i = 0; i < NUMBER_OF_BLOCKS; ++i) {
+        randomSize = MIN + (rand() % (MAX - MIN + 1));
+        blockArray[i] = memoryAlloc(randomSize);
+        if (blockArray[i] != NULL) {
+            realAllocatedSize += -getIntFromRegion(getPointerLocation(blockArray[i]));
+            allocatedSize += -getIntFromRegion(getPointerLocation(blockArray[i])) - SIZE_OF_HEAD_WITH_TAIL;
+            allocatedBlocksCount++;
         }
     }
 
+    float fragmentation = ((float) allocatedSize / (float) realAllocatedSize) * 100;
 
-    if (*(int*) head == 0) //ak sa zaplni cela pamat tak to bude -8 co je v tomto pripade nula
-    {
-        allocated_memory = size;
-    } else
-    {
-        allocated_memory = size -  *(int*) (head + (*(int*) head));
-    }
+    printf("Tried to allocate %d blocks. Successfully allocated %d Blocks.\n", NUMBER_OF_BLOCKS, allocatedBlocksCount);
+    printf("Original memory size was %d. Remaining memory size after allocation of blocks with random size was %d bytes, in ideal contitions it would be %d bytes.\n",
+           SIZE,  SIZE - realAllocatedSize - 2 * INT_SIZE, SIZE - allocatedSize - 2 * INT_SIZE);
+    printf("Fragmentation was %lf %%. \n\n", fragmentation);
 
-    expected_allocation = allocated_size;
-    fragmenation =  ((float) expected_allocation / (float) allocated_memory) * 100;
-
-    printf("Po pokuse nacitania 5 blokov do pamate sa podarilo alokovat %d blokov.\n", allocated_blocks);
-    printf("Povodna velkost pamate bola %d zostatok pamate po alokovani %d blokov nahodnej velkosti bola %d bajtov, za idealnych podmienok by to bolo %d bajtov.\n", size, allocated_blocks, size - allocated_memory, size - expected_allocation);
-    printf("Vziknuta fragmentacia bola %.2lf %%. \n\n\n\n", 100 - fragmenation);
-
-    memset(head, 0, size);
+    memset(head, 0, SIZE);
 }
 
-void test (int size) {
-    char region[size];
-    int allocated_blocks = 0;
-    int expected_size = 0;
-    float fragmenation = 0;
-    int remaining_memory = 0;
-    int offset = 0;
+/**
+ * Test of creating 5 same size blocks and freeing some of them (depends on which you comment out)
+ * @param SIZE memory size
+ */
+void test(const int SIZE) {
+    const int BLOCK_SIZE = 8;
+    char region[SIZE];
 
-    memoryInnit(region, size);
+    memoryInnit(region, SIZE);
 
-    void *allocatedBlock1 = memoryAlloc(8);
-    void *allocatedBlock2 = memoryAlloc(8);
-    void *allocatedBlock3 = memoryAlloc(8);
-    void *allocatedBlock4 = memoryAlloc(8);
-    void *all_block_5 = memoryAlloc(8);
+    // list of all blocks
+    void* blockArray[5] = {NULL};
+    blockArray[0] = memoryAlloc(BLOCK_SIZE);
+    blockArray[1] = memoryAlloc(BLOCK_SIZE);
+    blockArray[2] = memoryAlloc(BLOCK_SIZE);
+    blockArray[3] = memoryAlloc(BLOCK_SIZE);
+    blockArray[4] = memoryAlloc(BLOCK_SIZE);
 
-    memoryFree(allocatedBlock1);
-    memoryFree(allocatedBlock4);
-    memoryFree(allocatedBlock2);
-    memoryFree(allocatedBlock3);
-
-    printf("DONE");
-
-//    if ( allocatedBlock != NULL) { allocated_blocks ++;}
-//    if ( allocatedBlock2 != NULL) { allocated_blocks ++;}
-//    if ( allocatedBlock3 != NULL) { allocated_blocks ++;}
-//    if ( allBlock4 != NULL) { allocated_blocks ++;}
-//    if ( all_block_5 != NULL) { allocated_blocks ++;}
-    // Tato cast kodu sa mi nepodarila implementovat
-    /*offset = *(int*) (head + 24 + 4);
-    if (*(int*) head == 0)
-    {
-        remaining_memory = 0;
-    } else
-    {
-        offset = *(int*) (head + *(int*) (head));
-        while(1)
-        {
-            remaining_memory += offset;
-            offset = *(int*) (head + *(int*) (head + (offset + 4)));
-            if (offset == 0)
-            {
-                break;
-            }
+    int allocatedBlocksCount = 0;
+    for (int i = 0; i < sizeof(blockArray) / sizeof(blockArray[0]); ++i) {
+        if (blockArray[i] != NULL) {
+            allocatedBlocksCount++;
         }
-        remaining_memory = size - 3 * INT_SIZE - allocated_blocks * (8 + 2 * INT_SIZE);
     }
 
-    expected_size = size - allocated_blocks * 8;
-    fragmenation = ((float) remaining_memory/ (float) expected_size) * 100;
+    memoryFree(blockArray[0]);
+//    memoryFree(blockArray[3]);
+    memoryFree(blockArray[1]);
+//    memoryFree(blockArray[2]);
+    memoryFree(blockArray[4]);
 
-    printf("Povodna velkost pamate bola %d zostatok pamate po alokovani %d blokov nahodnej velkosti bola %d bajtov.\n", size, allocated_blocks,  remaining_memory);
-    printf("Idealna velkost volnej pamate by bola %d\n", expected_size);
-    printf("Vziknuta fragmentacia bola %lf %%. \n", fragmenation);*/
 
+    // number of all free bytes including headers and footers
+    int remainingMemory = 0;
+    // number of all free bytes excluding headers and footers
+    int realRemainingMemory = 0;
+    int freeBlocksCount = 0;
 
+    int firstFreeBlock = getIntFromRegion(FIRST_FREE_BLOCK_LOCATION);
+    // if there are remaining free blocks
+    if (firstFreeBlock != EMPTY) {
+        int freeBlockHead = firstFreeBlock;
+        int freeBlockSize;
+        // count all the memory
+        while (freeBlockHead != EMPTY) {
+            freeBlocksCount++;
+            freeBlockSize = getIntFromRegion(freeBlockHead);
+            remainingMemory+= freeBlockSize;
+            realRemainingMemory+= freeBlockSize - SIZE_OF_HEAD_WITH_TAIL;
+            freeBlockHead = getHeadOfNextFreeBlock(freeBlockHead);
+        }
+    }
+    int expectedSize = SIZE - (allocatedBlocksCount - freeBlocksCount) * BLOCK_SIZE;
+    float fragmentation = ((float) remainingMemory / (float) expectedSize) * 100;
+
+    printf("Starting memory size was %d.\n", SIZE);
+    printf("Remaining memory after allocating %d and freeing %d blocks of size %d was %d bytes.\n",
+           allocatedBlocksCount, freeBlocksCount, BLOCK_SIZE, remainingMemory);
+    printf("Expected free memory size would be %d bytes\n", expectedSize);
+    printf("Fragmentation was %lf %%. \n\n", fragmentation);
 }
 
 int main(void) {
-
-    // nepodarilo sa mi cele implementovat
-    //scenar 1
+    // first scenario
     test(100);
 
-
-    //scenar 2
+    // second scenario
     testRandom(50, 8, 24);
     testRandom(100, 8, 24);
     testRandom(200, 8, 24);
 
-
-    //scenar 3
+    // third scenario
     testRandom(10000, 500, 5000);
 
-
-    //scenar 4
+    // fourth scenario
     testRandom(100000, 8, 50000);
 
     return 0;
