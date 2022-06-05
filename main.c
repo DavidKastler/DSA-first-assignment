@@ -345,7 +345,7 @@ void testRandom(const int SIZE, const int MIN, const int MAX ) {
 
     memoryInnit(region, SIZE);
 
-    // alokovanie 5 blokov
+    // allocation of 5 blocks
     int allocatedBlocksCount = 0;
     int allocatedSize = 0;
     int realAllocatedSize = 0;
@@ -400,7 +400,6 @@ void test(const int SIZE) {
     memoryFree(blockArray[1]);
 //    memoryFree(blockArray[2]);
     memoryFree(blockArray[4]);
-
 
     // number of all free bytes including headers and footers
     int remainingMemory = 0;
