@@ -10,8 +10,10 @@
 #define FIRST_FREE_BLOCK_LOCATION 4
 #define EMPTY 0
 
+// global variable to store head of memory
 void *head;
 // x/50db head
+
 
 int setIntIntoRegion(int byteLocation, int value) {
     return *(int*) (head + byteLocation) = value;
@@ -59,6 +61,7 @@ void* getPointerFromLocation(int location) {
  * \n 3. block is on the end (delete reference to it)
  * \n 4. it is last block (set firstFreeBlock to 0)
  * @param blockHeadLocation head location of block you want to remove from list
+ * @return true/false if operation was successful
  */
 bool removeBlockFromMemoryList(int blockHeadLocation) {
     // if block not is free
@@ -87,12 +90,12 @@ bool removeBlockFromMemoryList(int blockHeadLocation) {
     // deleting references from current block
     setPointerToNextBlock(blockHeadLocation, 0);
     setPointerToPrevBlock(blockHeadLocation, 0);
-
     return true;
 }
 
 /**
  * Function that creates free block without pointers into region through head pointer
+ * @details if you do not specify any pointer it will add it as first block in chain
  * @attention does not check if allocation does not override other blocks
  * @param blockLocation     location of start byte of block
  * @param blockSize         size of block you want to create
@@ -103,10 +106,21 @@ void createFreeBlock(int blockLocation, int blockSize, int nextBlockHead, int pr
     memset((head + blockLocation), 0, blockSize);
     setIntIntoRegion(blockLocation, blockSize);
     setIntIntoRegion(blockLocation + blockSize - INT_SIZE, blockSize);
-    // next block
-    setIntIntoRegion(blockLocation + INT_SIZE, nextBlockHead);
-    // prev block
-    setIntIntoRegion(blockLocation + 2 * INT_SIZE, previousBlockHead);
+    // if at least one of pointers is set
+    if (previousBlockHead != EMPTY || nextBlockHead != EMPTY) {
+        // next block
+        setPointerToNextBlock(blockLocation, nextBlockHead);
+        // prev block
+        setPointerToPrevBlock(blockLocation, previousBlockHead);
+        return;
+    }
+    // if it is supposed to be first block in chain
+    int firstFreeBlock = getIntFromRegion(FIRST_FREE_BLOCK_LOCATION);
+    if (firstFreeBlock != EMPTY) {
+        setPointerToPrevBlock(firstFreeBlock, blockLocation);
+        setPointerToNextBlock(blockLocation, firstFreeBlock);
+    }
+    setIntIntoRegion(FIRST_FREE_BLOCK_LOCATION, blockLocation);
 }
 
 /**
@@ -115,52 +129,34 @@ void createFreeBlock(int blockLocation, int blockSize, int nextBlockHead, int pr
  * @param blockHead start of the block you want to allocate
  * @param realBlockSize real block size -> wanted_size + head(4B) + tail(4B)
  */
-void allocateBlock(int blockHead, int realBlockSize) {
+void* allocateBlock(int blockHead, int realBlockSize) {
     // saving pointers for later use after allocating new block
     int nextFreeBlockHead = getHeadOfNextFreeBlock(blockHead);
     int prevFreeBlockHead = getHeadOfPrevFreeBlock(blockHead);
     int freeBlockSize = getIntFromRegion(blockHead);
     // handling case when block was not empty or not big enough
     if (freeBlockSize < realBlockSize) {
-        exit(1);
+        return NULL;
     }
-
     // if block can be split
     if ((freeBlockSize - realBlockSize) >= MIN_BLOCK_SIZE) {
         createFreeBlock(blockHead + realBlockSize, freeBlockSize - realBlockSize,
                         nextFreeBlockHead, prevFreeBlockHead);
-        setIntIntoRegion(FIRST_FREE_BLOCK_LOCATION, blockHead + realBlockSize);
+        // this is to counter act if it is last block and it creates reference to block that is about to get allocated
+        if (nextFreeBlockHead == EMPTY && prevFreeBlockHead == EMPTY) {
+            setPointerToNextBlock(blockHead + realBlockSize, 0);
+        }
     } else {
         realBlockSize = freeBlockSize;
-        // pointer shuffle since current free block is all allocated
-        // it was last free block
-        if (prevFreeBlockHead == EMPTY && nextFreeBlockHead == EMPTY) {
-            setIntIntoRegion(FIRST_FREE_BLOCK_LOCATION, 0);
-        }
-        // if it is last block in chain
-        else if (prevFreeBlockHead != EMPTY && nextFreeBlockHead == EMPTY) { //TODO opravit vnutro podmienok
-            setIntIntoRegion(FIRST_FREE_BLOCK_LOCATION, nextFreeBlockHead);
-            setPointerToPrevBlock(nextFreeBlockHead, 0);
-        }
-        // if it is first block in chain
-        else if (prevFreeBlockHead == EMPTY && nextFreeBlockHead != EMPTY) {
-            setIntIntoRegion(FIRST_FREE_BLOCK_LOCATION, nextFreeBlockHead);
-            setPointerToPrevBlock(nextFreeBlockHead, 0);
-        }
-        // if it is in the middle of chain
-        else {
-            setPointerToNextBlock(prevFreeBlockHead, nextFreeBlockHead);
-            setPointerToPrevBlock(nextFreeBlockHead, prevFreeBlockHead);
-        }
+        removeBlockFromMemoryList(blockHead);
     }
-
+    // creating allocated block
     memset((head + blockHead), -1, realBlockSize);
     // head
     setIntIntoRegion(blockHead, -realBlockSize);
     // foot
     setIntIntoRegion(blockHead + realBlockSize - INT_SIZE, -realBlockSize);
-
-
+    return (void *) (head + blockHead);
 }
 
 /**
@@ -171,10 +167,10 @@ void allocateBlock(int blockHead, int realBlockSize) {
  * @param region pointer to start of memory
  * @param size size of the memory
  */
-void memory_innit(void *region, int size) {
+bool memoryInnit(void *region, int size) {
     if (size < MIN_MEMORY_SIZE) {
         printf("Unable to allocate region that small");
-        exit(1);
+        return false;
     }
     head = region;
     // clearing whole region of memory with zeros
@@ -187,6 +183,7 @@ void memory_innit(void *region, int size) {
     int firstFreeBlockSize = size - 2 * INT_SIZE;
     setIntIntoRegion(8, firstFreeBlockSize);
     setIntIntoRegion(size - INT_SIZE, firstFreeBlockSize);
+    return true;
 }
 
 /**
@@ -197,12 +194,11 @@ void memory_innit(void *region, int size) {
 int bestFit(const int newBlockSize) {
     int freeBlockHead = getIntFromRegion(FIRST_FREE_BLOCK_LOCATION);
     if (freeBlockHead == EMPTY) {
-        return NULL;
+        return EMPTY;
     }
     int freeBlockSize = getIntFromRegion(freeBlockHead);
-
     int bestBlockHead = EMPTY;
-    int bestBlockSize = INT_MAX;
+    int bestBlockSize = freeBlockSize;
     // if free block does not have pointer (it is 0) to next block it is last block
     while (freeBlockHead != EMPTY) {
         // if we found exact block we were looking for
@@ -211,7 +207,7 @@ int bestFit(const int newBlockSize) {
             break;
         }
         // if block is big enough and is closer to desired size
-        else if (freeBlockSize > newBlockSize && freeBlockSize < bestBlockSize) {
+        else if (freeBlockSize > newBlockSize && freeBlockSize <= bestBlockSize) {
             bestBlockHead = freeBlockHead;
             bestBlockSize = freeBlockSize;
         }
@@ -221,29 +217,64 @@ int bestFit(const int newBlockSize) {
     return bestBlockHead;
 }
 
+/**
+ * Function that allocates memory and gives you pointer to allocated block (NULL if memory was full)
+ * @param newBlockSize  wanted size of memory block
+ * @return  reference to that block
+ */
 void* memoryAlloc(int newBlockSize) {
-
-    // TODO pridat mem_check
-
     // if first free block pointer is 0 than memory is full
     if (getIntFromRegion(FIRST_FREE_BLOCK_LOCATION) == EMPTY) {
         //printf("Memory is full.");
         return NULL;
     }
-    // rounding to even number
+    // rounding to even number to simulate small fragmentation
     int realNewBlockSize = (newBlockSize % 2 == 1 ? newBlockSize + 1: newBlockSize) + SIZE_OF_HEAD_WITH_TAIL;
     int freeBlockHead = bestFit(realNewBlockSize);
-
-    allocateBlock(freeBlockHead, realNewBlockSize);
-    return (void *) (head + freeBlockHead);
+    if (freeBlockHead == EMPTY) {
+        return NULL;
+    }
+    return allocateBlock(freeBlockHead, realNewBlockSize);
 }
 
-int memoryFree(void *blockHeadPointer) {
+/**
+ * Function that checks if allocated blockPointer is still valid
+ * @param blockPointer  block you want to check
+ * @return  true/false if operation was successful
+ */
+bool memoryCheck(void *blockPointer) {
+    const int memorySize = getIntFromRegion(0);
+    const int blockLocation = getPointerLocation(blockPointer);
+    const int blockHeadSize = getIntFromRegion(blockLocation);
+    // if it is allocated
+    if (blockHeadSize >= MIN_BLOCK_SIZE) {
+        return false;
+    }
+    // if block would reach outside memory
+    if ((blockLocation + blockHeadSize) > memorySize) {
+        return false;
+    }
+    const int blockFootSize = getIntFromRegion(blockLocation + blockHeadSize);
+    // if footer and header does not match
+    if (blockHeadSize != blockFootSize) {
+        return false;
+    }
+    return true;
+}
+
+/**
+ * Function to release memory and push it to the list of free memory blocks
+ * @param blockHeadPointer block pointer you want to free
+ * @return true/false if operation was successful
+ */
+bool memoryFree(void *blockHeadPointer) {
+    if (memoryCheck(blockHeadPointer) == false) {
+        return false;
+    }
     int memSize = getIntFromRegion(0);
     int sizeOfBlock =  -(*(int *) blockHeadPointer);
     int blockHead = getPointerLocation(blockHeadPointer);
-    int firstFreeBlockHead = getIntFromRegion(FIRST_FREE_BLOCK_LOCATION);
-
+    // getting successor and predecessor pointers
     int predBlockSize = EMPTY;
     int predBlockHead = EMPTY;
     int succBlockSize = EMPTY;
@@ -265,96 +296,37 @@ int memoryFree(void *blockHeadPointer) {
     }
     // if I have free block in on both sides
     if (predBlockHead > 0 && succBlockHead > 0) {
-        int predNextBlockHead = getHeadOfNextFreeBlock(predBlockHead);
-        int predPrevBlockHead = getHeadOfPrevFreeBlock(predBlockHead);
-        int succNextBlockHead = getHeadOfNextFreeBlock(succBlockHead);
-        int succPrevBlockHead = getHeadOfPrevFreeBlock(succBlockHead);
-        // setting predecessor block pointers
-        if (predPrevBlockHead != EMPTY && predNextBlockHead != succBlockHead) {
-            setPointerToNextBlock(predPrevBlockHead, predNextBlockHead);
+        if (removeBlockFromMemoryList(succBlockHead) == false) {
+            return false;
         }
-        if (predNextBlockHead != EMPTY && predNextBlockHead != succBlockHead) {
-            setPointerToPrevBlock(predNextBlockHead, predPrevBlockHead);
+        if (removeBlockFromMemoryList(predBlockHead) == false) {
+            return false;
         }
-        // setting successor block pointers
-        if (succPrevBlockHead != EMPTY && succNextBlockHead != predBlockHead) {
-            setPointerToNextBlock(succPrevBlockHead, succNextBlockHead);
-        }
-        if (succNextBlockHead != EMPTY && succPrevBlockHead != predBlockHead) {
-            setPointerToPrevBlock(succNextBlockHead, succPrevBlockHead);
-        }
-
-        // setting first free block
-        setIntIntoRegion(FIRST_FREE_BLOCK_LOCATION, predBlockHead);
-        createFreeBlock(predBlockHead, predBlockSize + sizeOfBlock + succBlockSize,
-                        firstFreeBlockHead, 0);
-        setPointerToPrevBlock(firstFreeBlockHead, predBlockHead);
-
-//        printf("NOT IMPLEMENTED: if I have free block in on both sides ");
+        int currentFreeBlockSize = predBlockSize + sizeOfBlock + succBlockSize;
+        createFreeBlock(predBlockHead, currentFreeBlockSize,0, 0);
     }
     // if successor block is free
     else if (predBlockHead <= 0 && succBlockHead > 0) {
-        int succNextBlockHead = getHeadOfNextFreeBlock(succBlockHead);
-        int succPrevBlockHead = getHeadOfPrevFreeBlock(succBlockHead);
-        // shuffling pointers
-        if (succNextBlockHead != EMPTY) {
-            setPointerToPrevBlock(succNextBlockHead, succPrevBlockHead);
+        if (removeBlockFromMemoryList(succBlockHead) == false) {
+            return false;
         }
-        if (succPrevBlockHead != EMPTY) {
-            setPointerToNextBlock(succPrevBlockHead, succNextBlockHead);
-        }
-        createFreeBlock(blockHead, succBlockSize + sizeOfBlock, firstFreeBlockHead, 0);
-        if (firstFreeBlockHead == succBlockHead) {
-            setPointerToPrevBlock(succNextBlockHead, blockHead);
-        } else if (firstFreeBlockHead != 0) {
-            setPointerToPrevBlock(firstFreeBlockHead, succBlockHead);
-        } else {
-            setIntIntoRegion(FIRST_FREE_BLOCK_LOCATION, blockHead);
-        }
+        createFreeBlock(blockHead, succBlockSize + sizeOfBlock, 0, 0);
     }
     // if predecessor block is free
     else if (predBlockHead > 0 && succBlockHead <= 0) {
-        int predNextBlockHead = getHeadOfNextFreeBlock(predBlockHead);
-        int predPrevBlockHead = getHeadOfPrevFreeBlock(predBlockHead);
-        // shuffling pointers
-        if (predNextBlockHead != EMPTY) {
-            setPointerToPrevBlock(predNextBlockHead, predPrevBlockHead);
+        if (removeBlockFromMemoryList(predBlockHead) == false) {
+            return false;
         }
-        if (predPrevBlockHead != EMPTY) {
-            setPointerToNextBlock(predPrevBlockHead, predNextBlockHead);
-        }
-        // creating block and setting pointers to it
-        createFreeBlock(predBlockHead, predBlockSize + sizeOfBlock, firstFreeBlockHead, 0);
-        if (firstFreeBlockHead != 0) {
-            setPointerToPrevBlock(firstFreeBlockHead, predBlockHead);
-        }
+        createFreeBlock(predBlockHead, predBlockSize + sizeOfBlock, 0, 0);
     }
     // if nothing close is free
     else {
-        createFreeBlock(blockHead, sizeOfBlock, firstFreeBlockHead, 0);
-        if (firstFreeBlockHead != EMPTY) {
-            setPointerToPrevBlock(firstFreeBlockHead, blockHead);
-        }
-        setIntIntoRegion(FIRST_FREE_BLOCK_LOCATION, blockHead);
+        createFreeBlock(blockHead, sizeOfBlock, 0, 0);
     }
-    return 1;
+    return true;
 }
 
-int memoryCheck(void *region) {
-    int size = *(int *) (region);
-    if (size > 0) {
-        // pozrie patu, ak sa rovna, pointer je platny
-        if (*(int *) (region + size) == size) {
-            return 1;
-        } else {
-            return 0;
-        }
-    } else {
-        return 0;
-    }
-}
-
-void test_random(unsigned  int size, int min, int max ) {
+void testRandom(unsigned  int size, int min, int max ) {
     char region[size];
     void *block_array[5];
     int allocated_blocks = 0;
@@ -364,7 +336,7 @@ void test_random(unsigned  int size, int min, int max ) {
     int random = 0;
     int allocated_memory = 0;
 
-    memory_innit(region, size);
+    memoryInnit(region, size);
 
     for (int i = 0; i < 5; ++i)  // nastavenie na NULL
     {
@@ -420,18 +392,20 @@ void test (int size) {
     int remaining_memory = 0;
     int offset = 0;
 
-    memory_innit(region, size);
+    memoryInnit(region, size);
 
     void *allocatedBlock1 = memoryAlloc(8);
     void *allocatedBlock2 = memoryAlloc(8);
     void *allocatedBlock3 = memoryAlloc(8);
     void *allocatedBlock4 = memoryAlloc(8);
-//    void *all_block_5 = memoryAlloc(8);
+    void *all_block_5 = memoryAlloc(8);
 
-    memoryFree(allocatedBlock3);
-    memoryFree(allocatedBlock2);
     memoryFree(allocatedBlock1);
+    memoryFree(allocatedBlock4);
+    memoryFree(allocatedBlock2);
+    memoryFree(allocatedBlock3);
 
+    printf("DONE");
 
 //    if ( allocatedBlock != NULL) { allocated_blocks ++;}
 //    if ( allocatedBlock2 != NULL) { allocated_blocks ++;}
@@ -476,17 +450,17 @@ int main(void) {
 
 
     //scenar 2
-    test_random(50, 8, 24);
-    test_random(100, 8, 24);
-    test_random(200, 8, 24);
+    testRandom(50, 8, 24);
+    testRandom(100, 8, 24);
+    testRandom(200, 8, 24);
 
 
     //scenar 3
-    test_random(10000, 500, 5000);
+    testRandom(10000, 500, 5000);
 
 
     //scenar 4
-    test_random(100000, 8, 50000);
+    testRandom(100000, 8, 50000);
 
     return 0;
 }
